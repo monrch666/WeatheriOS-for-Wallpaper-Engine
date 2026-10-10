@@ -58,6 +58,7 @@ class WeatherShaderEngine {
             uniform float u_sun_alt;
             uniform vec2  u_moon_uv;
             uniform float u_moon_alt;
+            uniform float u_moon_phase;
             uniform vec2  u_wind;
 
             uniform float u_cloud_cov;
@@ -75,6 +76,7 @@ class WeatherShaderEngine {
             uniform float u_lightning;
             uniform float u_bolt_seed;
             uniform float u_vignette;
+            uniform float u_aurora;
             uniform sampler2D u_noise_tex;
 
             float noise3D(in vec3 x) {
@@ -94,8 +96,8 @@ class WeatherShaderEngine {
                 f += 0.5000 * noise3D(p); p = p * 2.02 + vec3(0.15, 0.32, 0.47);
                 f += 0.2500 * noise3D(p); p = p * 2.03 + vec3(0.35, 0.12, 0.28);
                 f += 0.1250 * noise3D(p); p = p * 2.01 + vec3(0.12, 0.45, 0.19);
-                f += 0.0625 * noise3D(p);
-                return f;
+                f += 0.0250 * noise3D(p); // Reduced finest octave to avoid visible grain
+                return f / 0.9;
             }
 
             float hash(vec2 p) {
@@ -109,28 +111,63 @@ class WeatherShaderEngine {
                 return fract(sin(p) * 43758.5453123);
             }
 
-            vec3 getSkyBackground(vec3 rd, float sunAlt, float cloudCov, float cloudType) {
-                float dayFactor = smoothstep(-0.1, 0.25, sunAlt);
-                float dawnFactor = smoothstep(0.2, -0.05, abs(sunAlt - 0.02));
+            // IDEA1_ATMOSPHERE_V2 — lightweight procedural stars and aurora curtains.
+            float getStarField(vec2 uv, float aspect) {
+                vec2 grid = uv * vec2(112.0 * aspect, 64.0);
+                vec2 cell = floor(grid);
+                vec2 localPos = fract(grid);
+                vec2 rnd = hash2(cell + vec2(13.1, 51.7));
+                float exists = step(0.977, rnd.x);
+                vec2 center = 0.14 + rnd.yx * 0.72;
+                float dist = length((localPos - center) * vec2(1.0, 1.15));
+                float core = 1.0 - smoothstep(0.0, 0.055 + 0.025 * rnd.y, dist);
+                float twinkle = 0.78 + 0.22 * sin(u_time * (0.55 + rnd.y * 1.7) + rnd.x * 31.0);
+                float skyMask = smoothstep(0.12, 0.34, uv.y);
+                return core * exists * twinkle * skyMask;
+            }
+
+            float getAurora(vec2 uv, float aspect) {
+                float x = uv.x * aspect;
+                float t = u_time * 0.035;
+                float waveA = sin(x * 2.8 + sin(x * 1.2 + t) * 0.7 + t) * 0.075;
+                float waveB = sin(x * 5.6 - t * 0.7) * 0.032;
+                float center = 0.62 + waveA + waveB;
+                float band = 1.0 - smoothstep(0.008, 0.19, abs(uv.y - center));
+                float ribbons = 0.45 + 0.55 * sin(x * 13.0 + sin(x * 3.0 + t) * 1.4 - t * 1.8);
+                float verticalMask = smoothstep(0.36, 0.53, uv.y) * (1.0 - smoothstep(0.79, 0.92, uv.y));
+                float detail = 0.55 + 0.45 * noise3D(vec3(x * 1.6, uv.y * 4.2, u_time * 0.012));
+                return band * max(0.0, ribbons) * verticalMask * detail;
+            }
+
+            vec3 getSkyBackground(vec3 rd, float sunAlt, float cloudCov, float u_cloud_type) {
+                float dayFactor = smoothstep(-0.12, 0.24, sunAlt);
+                float twilightFactor = exp(-pow((sunAlt + 0.075) / 0.19, 2.0));
+                float goldenHour = exp(-pow((sunAlt - 0.105) / 0.15, 2.0));
                 float h = max(0.0, rd.y);
 
-                // Атмосферный градиент Рэлея с глубоким синим зенитом
-                vec3 clearZenith = vec3(0.12, 0.38, 0.82);
-                vec3 clearHorizon = vec3(0.64, 0.80, 0.95);
-                vec3 dawnZenith = vec3(0.09, 0.12, 0.32);
-                vec3 dawnHorizon = vec3(0.98, 0.48, 0.18);
-                vec3 nightZenith = vec3(0.010, 0.015, 0.04);
-                vec3 nightHorizon = vec3(0.035, 0.065, 0.15);
+                // IDEA1_ATMOSPHERE_V2 — richer golden hour, blue hour and deep-night palette.
+                vec3 clearZenith = vec3(0.10, 0.34, 0.78);
+                vec3 clearHorizon = vec3(0.62, 0.80, 0.96);
+                vec3 goldenZenith = vec3(0.23, 0.18, 0.39);
+                vec3 goldenHorizon = vec3(1.00, 0.40, 0.20);
+                vec3 twilightZenith = vec3(0.12, 0.10, 0.29);
+                vec3 twilightHorizon = vec3(0.48, 0.29, 0.48);
+                vec3 nightZenith = vec3(0.008, 0.012, 0.035);
+                vec3 nightHorizon = vec3(0.028, 0.050, 0.12);
 
-                vec3 skyClear = mix(mix(nightHorizon, nightZenith, pow(h, 0.75)),
-                                    mix(clearHorizon, clearZenith, pow(h, 0.65)), dayFactor);
-                skyClear = mix(skyClear, mix(dawnHorizon, dawnZenith, pow(h, 0.55)), dawnFactor * 0.88);
+                vec3 skyNight = mix(nightHorizon, nightZenith, pow(h, 0.75));
+                vec3 skyDay = mix(clearHorizon, clearZenith, pow(h, 0.65));
+                vec3 skyClear = mix(skyNight, skyDay, dayFactor);
+                skyClear = mix(skyClear, mix(twilightHorizon, twilightZenith, pow(h, 0.58)), twilightFactor * 0.72);
+                skyClear = mix(skyClear, mix(goldenHorizon, goldenZenith, pow(h, 0.58)), goldenHour * 0.78);
 
                 // Пасмурное / грозовое небо
                 vec3 overcastZenith = mix(vec3(0.22, 0.26, 0.32), vec3(0.12, 0.14, 0.19), u_thunder);
                 vec3 overcastHorizon = mix(vec3(0.46, 0.50, 0.56), vec3(0.24, 0.27, 0.33), u_thunder);
                 vec3 overcastNight = vec3(0.025, 0.030, 0.045);
                 vec3 skyOvercast = mix(overcastNight, mix(overcastHorizon, overcastZenith, h), dayFactor);
+                skyOvercast = mix(skyOvercast, vec3(0.32, 0.22, 0.38), twilightFactor * 0.25 * (1.0 - u_thunder));
+                skyOvercast = mix(skyOvercast, vec3(0.68, 0.32, 0.24), goldenHour * 0.18 * (1.0 - u_thunder));
 
                 // Зимняя стальная атмосфера
                 vec3 winterZenith = vec3(0.20, 0.26, 0.36);
@@ -143,26 +180,45 @@ class WeatherShaderEngine {
                 vec3 dustHorizon = vec3(0.70, 0.52, 0.32);
                 vec3 skyDust = mix(vec3(0.07, 0.05, 0.03), mix(dustHorizon, dustZenith, h), dayFactor);
 
-                float overcastWeight = smoothstep(0.25, 0.85, cloudCov) * max(cloudType, max(u_snow, u_blizzard));
+                float overcastWeight = smoothstep(0.25, 0.85, cloudCov) * max(u_cloud_type, max(u_snow, u_blizzard));
                 vec3 result = mix(skyClear, skyOvercast, overcastWeight);
                 return mix(result, skyDust, u_dust);
             }
 
             // Мягкая плотность облака с шелковистыми краями
+            // IDEA2_VOLUMETRIC_CLOUDS — stacked cloud profiles sharing the live weather controls.
             float getCloudDensity(vec3 p, vec3 windShift, float cloudCov, out float hFraction) {
                 hFraction = (p.y - 1.2) / 1.8;
                 if (hFraction < 0.0 || hFraction > 1.0) return 0.0;
 
-                // Высотный профиль плотности
-                float heightShape = smoothstep(0.0, 0.20, hFraction) * smoothstep(1.0, 0.40, hFraction);
-                vec3 sampleCoord = (p + windShift) * 0.32;
+                vec3 rawCoord = (p + windShift) * 0.32;
+                float highLayerBlend = smoothstep(0.34, 0.72, hFraction);
+                // Stretch the noise horizontally aloft to form thin, elongated wisps without extra samples.
+                vec3 sampleCoord = rawCoord;
+                sampleCoord.x *= mix(1.0, 0.28, highLayerBlend);
+                sampleCoord.z *= mix(1.0, 0.52, highLayerBlend);
                 float baseNoise = fbm3D(sampleCoord);
-
                 float billow = 1.0 - abs(baseNoise * 2.0 - 1.0);
-                float combinedShape = mix(baseNoise, billow, 0.50) * heightShape;
 
+                // Main cloud bodies occupy the lower and middle part of the volume.
+                // The upper profile shares the same samples, so wisps add no extra texture lookups.
+                float bodyProfile = smoothstep(0.0, 0.20, hFraction) *
+                                    (1.0 - smoothstep(0.62, 0.94, hFraction));
+                float bodyShape = mix(baseNoise, billow, 0.62) * bodyProfile;
                 float threshold = mix(0.78, 0.10, cloudCov);
-                return smoothstep(threshold, threshold + 0.24, combinedShape);
+                float bodyDensity = smoothstep(threshold, threshold + 0.22, bodyShape);
+
+                // Thin cirrus-like strands appear only with partial cloud cover and fade into overcast.
+                float cirrusProfile = smoothstep(0.38, 0.56, hFraction) *
+                                      (1.0 - smoothstep(0.78, 0.98, hFraction));
+                float ridgeField = 1.0 - abs(baseNoise * 2.0 - 1.0);
+                float cirrusThreshold = mix(0.88, 0.62, cloudCov);
+                float cirrusStrands = smoothstep(cirrusThreshold, cirrusThreshold + 0.12, ridgeField);
+                float cirrusAmount = (1.0 - u_cloud_type) * smoothstep(0.16, 0.55, cloudCov) *
+                                     (0.18 + 0.22 * cloudCov);
+                float cirrusDensity = cirrusStrands * cirrusProfile * cirrusAmount;
+
+                return clamp(max(bodyDensity, cirrusDensity), 0.0, 1.0);
             }
 
             float getRain(vec2 uv, float aspect, float heavy) {
@@ -304,6 +360,21 @@ class WeatherShaderEngine {
                 // 1. Небесный купол
                 vec3 col = getSkyBackground(rd, u_sun_alt, u_cloud_cov, u_cloud_type);
 
+                // IDEA1_ATMOSPHERE_V2 — stars and aurora fade with real solar altitude.
+                float nightFactor = 1.0 - smoothstep(-0.18, 0.055, u_sun_alt);
+                if (nightFactor > 0.001) {
+                    float starVisibility = nightFactor * (1.0 - u_fog * 0.70) * (1.0 - u_dust * 0.45);
+                    float stars = getStarField(uv, aspect);
+                    col += vec3(0.66, 0.78, 1.0) * stars * starVisibility * 0.82;
+
+                    if (u_aurora > 0.001) {
+                        float auroraVisibility = u_aurora * nightFactor * (1.0 - u_cloud_cov * 0.78) * (1.0 - u_fog * 0.82) * (1.0 - u_dust * 0.75);
+                        float auroraShape = getAurora(uv, aspect) * auroraVisibility;
+                        col += vec3(0.08, 0.95, 0.55) * auroraShape * 0.42;
+                        col += vec3(0.19, 0.34, 1.0) * pow(auroraShape, 2.0) * 0.48;
+                    }
+                }
+
                 // --- 2. СОЛНЦЕ И ЛУНА ---
                 if (u_sun_alt > -0.15 && u_dust < 0.7) {
                     vec2 sunP = (u_sun_uv - 0.5) * vec2(aspect, 1.0);
@@ -319,9 +390,19 @@ class WeatherShaderEngine {
                     vec2 moonP = (u_moon_uv - 0.5) * vec2(aspect, 1.0);
                     float moonDist = length(screenP - moonP);
                     float moonTranslucency = mix(1.0, 0.25, smoothstep(0.1, 0.95, u_cloud_cov));
-                    float moonCore = smoothstep(0.035, 0.025, moonDist) * moonTranslucency;
-                    float moonHalo = (0.03 / (moonDist * 2.0 + 0.05)) * moonTranslucency;
-                    vec3 moonCol = vec3(0.92, 0.95, 1.0);
+                    vec2 moonLocal = vec2((screenP.x - moonP.x) / (0.035 * aspect), (screenP.y - moonP.y) / 0.035);
+                    float moonRadius = length(moonLocal);
+                    float moonDisk = 1.0 - smoothstep(0.92, 1.0, moonRadius);
+                    float phaseAngle = u_moon_phase * 6.2831853;
+                    float phaseCos = cos(phaseAngle);
+                    float phaseSin = sin(phaseAngle);
+                    float terminator = phaseCos * sqrt(max(0.0, 1.0 - moonLocal.y * moonLocal.y));
+                    float waxingSide = phaseSin < 0.0 ? -1.0 : 1.0;
+                    float moonLit = step(0.0, moonLocal.x * waxingSide - terminator);
+                    float moonIllumination = 0.5 - 0.5 * cos(phaseAngle);
+                    float moonCore = moonDisk * moonLit * moonTranslucency;
+                    float moonHalo = (0.03 / (moonDist * 2.0 + 0.05)) * moonTranslucency * mix(0.12, 1.0, moonIllumination);
+                    vec3 moonCol = vec3(0.88, 0.93, 1.0);
                     col += (moonCore * 1.5 + moonHalo * 0.4) * moonCol * smoothstep(-0.15, 0.1, u_moon_alt);
                 }
 
@@ -330,6 +411,26 @@ class WeatherShaderEngine {
                     float sunDist = length(screenP - sunP);
                     float dustSun = smoothstep(0.06, 0.02, sunDist) * 0.45 * u_dust;
                     col += vec3(0.95, 0.45, 0.18) * dustSun;
+                }
+
+                // IDEA2_VOLUMETRIC_CLOUDS — subtle screen-space shafts, naturally occluded by the cloud volume.
+                if (u_sun_alt > -0.12 && u_cloud_cov > 0.12 && u_dust < 0.65) {
+                    vec2 raySunP = (u_sun_uv - 0.5) * vec2(aspect, 1.0);
+                    vec2 rayDelta = screenP - raySunP;
+                    float rayDistance = length(rayDelta);
+                    float rayAngle = atan(rayDelta.y, rayDelta.x);
+                    float rayWave = sin(rayAngle * 9.0 + sin(rayAngle * 2.7 + u_time * 0.018) * 0.75);
+                    float rayPattern = pow(max(0.0, 0.5 + 0.5 * rayWave), 16.0);
+                    float brokenCloudWeight = smoothstep(0.12, 0.36, u_cloud_cov) *
+                                              (1.0 - smoothstep(0.58, 0.92, u_cloud_cov));
+                    float raySunlight = smoothstep(-0.12, 0.08, u_sun_alt) *
+                                        (1.0 - u_thunder * 0.90) * (1.0 - u_fog * 0.65);
+                    float rays = rayPattern * exp(-rayDistance * 0.80) * brokenCloudWeight * raySunlight *
+                                (1.0 - u_cloud_type * 0.75) *
+                                (1.0 - max(u_snow, u_blizzard) * 0.55);
+                    vec3 rayTint = mix(vec3(1.0, 0.43, 0.22), vec3(1.0, 0.93, 0.81),
+                                       smoothstep(-0.02, 0.20, u_sun_alt));
+                    col += rayTint * rays * 0.16;
                 }
 
                 // --- 3. 3D RAYMARCHING ОБЛАКОВ С РЕАЛИСТИЧНЫМ РАССЕЯНИЕМ ---
@@ -342,7 +443,9 @@ class WeatherShaderEngine {
                     const int STEPS = 28;
                     float stepSize = marchDist / float(STEPS);
 
-                    float jitter = hash(gl_FragCoord.xy + u_time);
+                    // Stable per-pixel jitter avoids temporal grain/shimmer between frames.
+                    // Narrow, stable jitter minimizes visible grain while reducing raymarch banding.
+                    float jitter = 0.5 + (hash(gl_FragCoord.xy) - 0.5) * 0.10;
                     float t = tStart + stepSize * jitter;
 
                     vec3 windShift = vec3(u_wind.x, 0.0, u_wind.y) * (u_time * 0.35);
@@ -366,13 +469,43 @@ class WeatherShaderEngine {
                     cloudBaseDark = mix(cloudBaseDark, vec3(0.35, 0.26, 0.18), u_dust);
                     cloudBaseLight = mix(cloudBaseLight, vec3(0.68, 0.52, 0.36), u_dust);
 
-                    float dawnGlow = smoothstep(0.20, -0.05, abs(u_sun_alt - 0.02)) * (1.0 - u_cloud_type * 0.65) * (1.0 - winterWeight);
-                    cloudBaseLight = mix(cloudBaseLight, vec3(1.0, 0.62, 0.42), dawnGlow);
+                    float twilightWarmth = exp(-pow((u_sun_alt - 0.035) / 0.12, 2.0));
+                    float directSun = smoothstep(-0.08, 0.18, u_sun_alt) * (1.0 - u_thunder * 0.88);
+                    vec3 twilightLight = mix(vec3(1.0, 0.40, 0.22), vec3(1.0, 0.93, 0.82),
+                                             smoothstep(-0.02, 0.20, u_sun_alt));
+                    cloudBaseLight = mix(cloudBaseLight, twilightLight,
+                                         twilightWarmth * (1.0 - u_cloud_type * 0.58) *
+                                         (1.0 - winterWeight * 0.35) * 0.72);
+                    cloudBaseDark = mix(cloudBaseDark, vec3(0.18, 0.15, 0.25),
+                                        twilightWarmth * 0.20 * (1.0 - u_thunder));
 
-                    // Мягкий контурный свет (Silver Lining)
-                    vec3 sunDir = normalize(vec3(u_sun_uv.x - 0.5, max(0.1, u_sun_alt), 0.5));
-                    float forwardScatter = pow(max(0.0, dot(rd, sunDir)), 4.0) * (1.0 - u_cloud_type) * (1.0 - winterWeight);
-                    cloudBaseLight = mix(cloudBaseLight, vec3(1.0, 0.98, 0.92), forwardScatter * 0.32);
+                    // Approximate the light direction in the same ray-marched volume.
+                    vec3 sunDir = normalize(vec3((u_sun_uv.x - 0.5) * 1.5, max(0.06, u_sun_alt), 0.5));
+                    float forwardScatter = pow(max(0.0, dot(rd, sunDir)), 5.5) *
+                                           (1.0 - u_cloud_type * 0.35) * (1.0 - winterWeight);
+                    cloudBaseLight = mix(cloudBaseLight, vec3(1.0, 0.97, 0.90),
+                                         forwardScatter * 0.45 * directSun * (1.0 - u_cloud_type * 0.78) * (1.0 - max(u_thunder, u_heavy_rain * 0.65) * 0.85) * (1.0 - max(u_snow, u_blizzard) * 0.58));
+
+                    // WEATHER_CLOUDS_GRAIN_AND_CONTRAST_V1 — restore live-weather cloud colours.
+                    // Cloud type/coverage/precipitation drive colour continuously; this is not a scene switch.
+                    float denseOvercastV2 = smoothstep(0.52, 0.92, u_cloud_cov);
+                    float stormDarknessV2 = clamp(max(u_thunder, max(u_heavy_rain * 0.78, u_rain * 0.28)), 0.0, 1.0);
+                    float snowCloudWeightV2 = clamp(max(u_snow, u_blizzard), 0.0, 1.0);
+                    float weatherCloudGreyWeightV2 = clamp(max(u_cloud_type,
+                        max(denseOvercastV2 * 0.72, max(u_thunder, max(u_heavy_rain, u_rain * 0.55)))), 0.0, 1.0);
+
+                    // Diffuse grey daylight for overcast clouds; storm clouds move toward charcoal blue-grey.
+                    vec3 weatherCloudLightV2 = mix(vec3(0.54, 0.56, 0.59), vec3(0.29, 0.31, 0.35), stormDarknessV2);
+                    vec3 weatherCloudDarkV2  = mix(vec3(0.22, 0.24, 0.28), vec3(0.075, 0.085, 0.11), stormDarknessV2);
+                    // Snow clouds are cold grey, not pure white; highlights remain slightly bluish.
+                    vec3 snowCloudLightV2 = vec3(0.48, 0.52, 0.59);
+                    vec3 snowCloudDarkV2  = vec3(0.15, 0.18, 0.23);
+
+                    float nonSnowGreyV2 = weatherCloudGreyWeightV2 * (1.0 - snowCloudWeightV2 * 0.62);
+                    cloudBaseLight = mix(cloudBaseLight, weatherCloudLightV2, nonSnowGreyV2);
+                    cloudBaseDark  = mix(cloudBaseDark, weatherCloudDarkV2, nonSnowGreyV2);
+                    cloudBaseLight = mix(cloudBaseLight, snowCloudLightV2, snowCloudWeightV2 * 0.85);
+                    cloudBaseDark  = mix(cloudBaseDark, snowCloudDarkV2, snowCloudWeightV2 * 0.85);
 
                     vec3 cloudDark = mix(vec3(0.025, 0.03, 0.05), cloudBaseDark, dayFactor);
                     vec3 cloudLight = mix(vec3(0.05, 0.07, 0.11), cloudBaseLight, dayFactor);
@@ -386,16 +519,30 @@ class WeatherShaderEngine {
 
                         if (density > 0.005) {
                             float dummyH;
-                            float lightDensity = getCloudDensity(pos + vec3(0.0, 0.24, 0.0), windShift, u_cloud_cov, dummyH);
-                            float shadow = clamp((density - lightDensity) * 2.8 + 0.38, 0.18, 1.0);
+                            // Sample toward the sun rather than only vertically for directional self-shadowing.
+                            vec3 lightSampleOffset = sunDir * 0.27 + vec3(0.0, 0.06, 0.0);
+                            float lightDensity = getCloudDensity(pos + lightSampleOffset, windShift, u_cloud_cov, dummyH);
+                            float shadow = clamp((density - lightDensity) * 3.4 + 0.30, 0.12, 1.0);
 
                             vec3 stepColor = mix(cloudDark, cloudLight, shadow);
 
-                            // Объемное просвечивание сквозь неплотные массы туч
-                            if (u_sun_alt > 0.0) {
+                            // Fine edge band catches warm low-angle light and neutral daylight.
+                            float edgeBand = smoothstep(0.015, 0.095, density) *
+                                             (1.0 - smoothstep(0.16, 0.44, density));
+                            float cloudSunVisibility = smoothstep(-0.08, 0.18, u_sun_alt) *
+                                                       (1.0 - u_thunder * 0.92) * (1.0 - u_dust * 0.40) *
+                                                       (1.0 - u_cloud_type * 0.72) * (1.0 - u_heavy_rain * 0.45) *
+                                                       (1.0 - max(u_snow, u_blizzard) * 0.50);
+                            float sunFacing = 0.20 + 0.80 * pow(max(0.0, dot(rd, sunDir)), 2.0);
+                            vec3 rimColor = mix(vec3(1.0, 0.48, 0.27), vec3(1.0, 0.96, 0.87),
+                                                smoothstep(-0.01, 0.20, u_sun_alt));
+                            stepColor += rimColor * edgeBand * sunFacing * cloudSunVisibility * 0.42;
+
+                            // Volumetric light transmission through thinner cloud regions.
+                            if (u_sun_alt > -0.08) {
                                 float sunAngle = max(0.0, dot(rd, sunDir));
                                 float translucency = exp(-density * 2.2);
-                                stepColor += vec3(1.0, 0.96, 0.90) * pow(sunAngle, 4.5) * translucency * 0.42;
+                                stepColor += rimColor * pow(sunAngle, 5.5) * translucency * cloudSunVisibility * 0.38;
                             }
 
                             if (u_lightning > 0.01) {
@@ -412,7 +559,8 @@ class WeatherShaderEngine {
                     }
 
                     float horizonHaze = smoothstep(0.04, 0.35, rd.y);
-                    col = mix(col, cloudAccum.rgb, cloudAccum.a * horizonHaze);
+                    // cloudAccum.rgb is already front-to-back alpha-premultiplied.
+                    col = col * (1.0 - cloudAccum.a * horizonHaze) + cloudAccum.rgb * horizonHaze;
                 }
 
                 // 4. Осадки
@@ -473,6 +621,8 @@ class WeatherShaderEngine {
             u_sun_alt:       { value: 0.5 },
             u_moon_uv:       { value: new THREE.Vector2(0.5, 0.5) },
             u_moon_alt:      { value: -0.5 },
+            u_moon_phase:    { value: 0.5 },
+            u_aurora:        { value: 0.0 },
             u_wind:          { value: new THREE.Vector2(0.03, 0.0) },
             u_cloud_cov:     { value: 1.0 },
             u_cloud_density: { value: 0.95 },
@@ -518,12 +668,14 @@ class WeatherShaderEngine {
         this.uniforms.u_sun_alt.value = celestial.sunAlt;
         this.uniforms.u_moon_uv.value.set(celestial.moonUV[0], celestial.moonUV[1]);
         this.uniforms.u_moon_alt.value = celestial.moonAlt;
+        this.uniforms.u_moon_phase.value = celestial.moonPhase ?? 0.5;
+        this.uniforms.u_aurora.value = state.aurora ?? 0.0;
 
         this.uniforms.u_wind.value.set(state.windVec[0], state.windVec[1]);
 
         this.uniforms.u_cloud_cov.value = state.cloudCoverage;
         this.uniforms.u_cloud_density.value = state.cloudDensity;
-        this.uniforms.u_cloud_type.value = state.cloudType;
+        this.uniforms.u_cloud_type.value = state.u_cloud_type;
 
         this.uniforms.u_rain.value = state.rain;
         this.uniforms.u_heavy_rain.value = state.heavyRain;

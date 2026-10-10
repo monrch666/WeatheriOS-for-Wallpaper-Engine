@@ -7,7 +7,8 @@ let LATITUDE = 58.1983;
 let LONGITUDE = 68.2547;
 
 let OWM_ENABLED = false;
-let STATIC_TIME_ENABLED = true;
+let STATIC_TIME_ENABLED = false; // IDEA1_ATMOSPHERE_V2: follow real solar time by default
+let AURORA_ENABLED = false;
 let MANUAL_TIME_HOURS = 14;
 let MANUAL_TIME_MINUTES = 30;
 
@@ -51,6 +52,8 @@ const state = {
     targetFog: 0.0,
     thunder: 0.0,
     targetThunder: 0.0,
+    aurora: 0.0,
+    targetAurora: 0.0,
 
     windSpeed: 4.0,
     windAngle: 45.0,
@@ -92,55 +95,130 @@ function updateUIVisibility() {
 // ==========================================
 // 2. РАСЧЕТ ПОЛОЖЕНИЯ СОЛНЦА И ЛУНЫ
 // ==========================================
+// ==========================================
+// 2. РАСЧЕТ ПОЛОЖЕНИЯ СОЛНЦА И ЛУНЫ
+// IDEA1_ATMOSPHERE_V2 — astronomical positions + real lunar phase
+// ==========================================
 class CelestialCalculator {
-    static calculate(date, lat, lon, aspect, sunriseUnix, sunsetUnix) {
-        let sunAlt = 0.0;
-        let sunAz = Math.PI;
+    static degToRad(value) { return value * Math.PI / 180.0; }
+    static radToDeg(value) { return value * 180.0 / Math.PI; }
 
-        if (STATIC_TIME_ENABLED) {
-            const fraction = (MANUAL_TIME_HOURS + MANUAL_TIME_MINUTES / 60.0) / 24.0;
-            sunAlt = Math.sin((fraction - 0.25) * 2.0 * Math.PI) * 1.15;
-            sunAz = fraction * 2.0 * Math.PI;
-        } else if (sunriseUnix > 0 && sunsetUnix > 0 && sunsetUnix > sunriseUnix) {
-            const nowSec = Math.floor(date.getTime() / 1000.0);
-            const dayLength = sunsetUnix - sunriseUnix;
-            const nightLength = 86400.0 - dayLength;
-            const maxElevation = Math.max(0.45, Math.min(1.25, (90.0 - Math.abs(lat) + 15.0) * (Math.PI / 180.0)));
+    static wrapDegrees(value) {
+        return ((value % 360.0) + 360.0) % 360.0;
+    }
 
-            if (nowSec >= sunriseUnix && nowSec < sunsetUnix) {
-                const dayProgress = (nowSec - sunriseUnix) / dayLength;
-                sunAlt = Math.sin(dayProgress * Math.PI) * maxElevation;
-                sunAz = (75.0 + dayProgress * 210.0) * (Math.PI / 180.0);
-            } else {
-                let nightProgress = 0.0;
-                if (nowSec >= sunsetUnix) {
-                    nightProgress = (nowSec - sunsetUnix) / nightLength;
-                } else {
-                    nightProgress = (nowSec + 86400.0 - sunsetUnix) / nightLength;
-                }
-                nightProgress = Math.max(0.0, Math.min(1.0, nightProgress));
-                sunAlt = -Math.sin(nightProgress * Math.PI) * maxElevation;
-                sunAz = (285.0 + nightProgress * 150.0) * (Math.PI / 180.0);
-            }
-        } else {
-            const fraction = (date.getHours() + date.getMinutes() / 60.0) / 24.0;
-            sunAlt = Math.sin((fraction - 0.25) * 2.0 * Math.PI) * 1.15;
-            sunAz = fraction * 2.0 * Math.PI;
+    static wrapRadians(value) {
+        const twoPi = 2.0 * Math.PI;
+        return ((value + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
+    }
+
+    static julianDay(date) {
+        return date.getTime() / 86400000.0 + 2440587.5;
+    }
+
+    static greenwichSiderealTime(jd) {
+        const d = jd - 2451545.0;
+        const T = d / 36525.0;
+        const degrees = this.wrapDegrees(
+            280.46061837 + 360.98564736629 * d + 0.000387933 * T * T - T * T * T / 38710000.0
+        );
+        return this.degToRad(degrees);
+    }
+
+    static horizontalCoordinates(jd, latDeg, lonDeg, rightAscension, declination) {
+        const lat = this.degToRad(Math.max(-89.9, Math.min(89.9, latDeg)));
+        const hourAngle = this.wrapRadians(this.greenwichSiderealTime(jd) + this.degToRad(lonDeg) - rightAscension);
+        const sinAlt = Math.sin(lat) * Math.sin(declination) +
+            Math.cos(lat) * Math.cos(declination) * Math.cos(hourAngle);
+        const altitude = Math.asin(Math.max(-1.0, Math.min(1.0, sinAlt)));
+        let azimuth = Math.atan2(
+            Math.sin(hourAngle),
+            Math.cos(hourAngle) * Math.sin(lat) - Math.tan(declination) * Math.cos(lat)
+        ) + Math.PI;
+        azimuth = (azimuth + 2.0 * Math.PI) % (2.0 * Math.PI);
+        return { altitude, azimuth };
+    }
+
+    static sunEquatorialCoordinates(jd) {
+        const T = (jd - 2451545.0) / 36525.0;
+        const L0 = this.wrapDegrees(280.46646 + T * (36000.76983 + T * 0.0003032));
+        const M = this.degToRad(this.wrapDegrees(357.52911 + T * (35999.05029 - 0.0001537 * T)));
+        const eccentricity = 0.016708634 - T * (0.000042037 + 0.0000001267 * T);
+        const C = Math.sin(M) * (1.914602 - T * (0.004817 + 0.000014 * T)) +
+            Math.sin(2.0 * M) * (0.019993 - 0.000101 * T) +
+            Math.sin(3.0 * M) * 0.000289;
+        const trueLongitude = L0 + C;
+        const omega = this.degToRad(125.04 - 1934.136 * T);
+        const apparentLongitude = this.degToRad(trueLongitude - 0.00569 - 0.00478 * Math.sin(omega));
+        const obliquity = this.degToRad(23.439291 - 0.0130042 * T + 0.00256 * Math.cos(omega));
+        const rightAscension = Math.atan2(Math.cos(obliquity) * Math.sin(apparentLongitude), Math.cos(apparentLongitude));
+        const declination = Math.asin(Math.sin(obliquity) * Math.sin(apparentLongitude));
+        return { rightAscension, declination };
+    }
+
+    // Low-cost lunar orbital approximation. Accurate enough for wallpaper motion and phase rendering.
+    static moonEquatorialCoordinates(jd) {
+        const d = jd - 2451543.5;
+        const N = this.degToRad(this.wrapDegrees(125.1228 - 0.0529538083 * d));
+        const inclination = this.degToRad(5.1454);
+        const w = this.degToRad(this.wrapDegrees(318.0634 + 0.1643573223 * d));
+        const eccentricity = 0.054900;
+        const M = this.degToRad(this.wrapDegrees(115.3654 + 13.0649929509 * d));
+
+        let E = M + eccentricity * Math.sin(M) * (1.0 + eccentricity * Math.cos(M));
+        for (let i = 0; i < 4; i++) {
+            E -= (E - eccentricity * Math.sin(E) - M) / (1.0 - eccentricity * Math.cos(E));
         }
 
-        const sunUV = [
-            Math.sin(sunAz) * 0.5 + 0.5,
-            Math.max(-0.25, (sunAlt / (Math.PI * 0.5)) * 0.75 + 0.25)
-        ];
+        const xv = Math.cos(E) - eccentricity;
+        const yv = Math.sqrt(1.0 - eccentricity * eccentricity) * Math.sin(E);
+        const v = Math.atan2(yv, xv);
+        const r = Math.sqrt(xv * xv + yv * yv);
+        const xh = r * (Math.cos(N) * Math.cos(v + w) - Math.sin(N) * Math.sin(v + w) * Math.cos(inclination));
+        const yh = r * (Math.sin(N) * Math.cos(v + w) + Math.cos(N) * Math.sin(v + w) * Math.cos(inclination));
+        const zh = r * Math.sin(v + w) * Math.sin(inclination);
 
-        const moonAlt = -sunAlt;
-        const moonAz = (sunAz + Math.PI) % (2.0 * Math.PI);
-        const moonUV = [
-            Math.sin(moonAz) * 0.5 + 0.5,
-            Math.max(-0.25, (moonAlt / (Math.PI * 0.5)) * 0.75 + 0.25)
-        ];
+        const obliquity = this.degToRad(23.439291);
+        const xe = xh;
+        const ye = yh * Math.cos(obliquity) - zh * Math.sin(obliquity);
+        const ze = yh * Math.sin(obliquity) + zh * Math.cos(obliquity);
+        return {
+            rightAscension: Math.atan2(ye, xe),
+            declination: Math.atan2(ze, Math.sqrt(xe * xe + ye * ye))
+        };
+    }
 
-        return { sunAlt, sunUV, moonAlt, moonUV };
+    static toScreenUV(horizontal) {
+        return [
+            Math.sin(horizontal.azimuth) * 0.5 + 0.5,
+            Math.max(-0.25, (horizontal.altitude / (Math.PI * 0.5)) * 0.75 + 0.25)
+        ];
+    }
+
+    static calculate(date, lat, lon, aspect, sunriseUnix, sunsetUnix) {
+        // Fixed-time mode keeps the selected clock time but still respects date and location.
+        const celestialDate = new Date(date.getTime());
+        if (STATIC_TIME_ENABLED) {
+            celestialDate.setHours(MANUAL_TIME_HOURS, MANUAL_TIME_MINUTES, 0, 0);
+        }
+
+        const jd = this.julianDay(celestialDate);
+        const sunEq = this.sunEquatorialCoordinates(jd);
+        const moonEq = this.moonEquatorialCoordinates(jd);
+        const sun = this.horizontalCoordinates(jd, lat, lon, sunEq.rightAscension, sunEq.declination);
+        const moon = this.horizontalCoordinates(jd, lat, lon, moonEq.rightAscension, moonEq.declination);
+
+        // Reference epoch near a known new moon; phase advances continuously with real time.
+        const lunarAge = ((jd - 2451550.1) % 29.530588853 + 29.530588853) % 29.530588853;
+        const moonPhase = lunarAge / 29.530588853; // 0=new moon, 0.5=full moon
+
+        return {
+            sunAlt: sun.altitude,
+            sunUV: this.toScreenUV(sun),
+            moonAlt: moon.altitude,
+            moonUV: this.toScreenUV(moon),
+            moonPhase
+        };
     }
 }
 
@@ -282,6 +360,9 @@ window.wallpaperPropertyListener = {
         if (props.static_time_enabled) {
             STATIC_TIME_ENABLED = props.static_time_enabled.value;
         }
+        if (props.aurora_enabled) {
+            AURORA_ENABLED = props.aurora_enabled.value;
+        }
         if (props.manual_time_hours) {
             MANUAL_TIME_HOURS = props.manual_time_hours.value;
         }
@@ -377,6 +458,9 @@ function mainLoop(timestamp) {
     state.windVec = [Math.cos(wRad) * wSpeed, Math.sin(wRad) * wSpeed];
 
     const lerp = 0.035;
+    const auroraLatitudeFactor = Math.max(0.0, Math.min(1.0, (Math.abs(LATITUDE) - 42.0) / 20.0));
+    state.targetAurora = AURORA_ENABLED ? auroraLatitudeFactor : 0.0;
+    state.aurora += (state.targetAurora - state.aurora) * Math.min(1.0, dt * 0.8);
     state.cloudCoverage += (state.targetCloudCoverage - state.cloudCoverage) * lerp;
     state.cloudDensity += (state.targetCloudDensity - state.cloudDensity) * lerp;
     state.cloudType += (state.targetCloudType - state.cloudType) * lerp;
