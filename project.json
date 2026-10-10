@@ -1,0 +1,223 @@
+{
+	"contentrating" : "Everyone",
+	"description" : "[h2]✨ Основные возможности[/h2]\r\n\r\n[list]\r\n[b]Два режима работы:[/b]\r\n[list]\r\n [i]Ручной конструктор[/i] — настраивайте облачность, силу ветра, интенсивность осадков и время суток независимо.\r\n [i]OpenWeatherMap[/i] — автоматическая синхронизация погоды, ветра и астрономического времени восхода/заката по названию города.\r\n[/list]\r\n [b]Процедурные 3D-облака:[/b] неоднородная плотность туч с разрывами, сквозь которые пробиваются лучи солнца и свет луны.\r\n [b]Реалистичные погодные эффекты:[/b] дождь, ливень, снегопад, метель, плотный туман, а также процедурные вспышки молний при грозе.\r\n [b]Световой цикл:[/b] солнце и луна движутся по естественной небесной траектории с плавными закатными и рассветными градиентами.\r\n [b]Полная кастомизация интерфейса:[/b] возможность по отдельности отключить любой элемент виджета (часы, дату, температуру, состояние погоды, город).\r\n [b]Оптимизация:[/b] выбор масштаба разрешения рендера (Quality Scale) под слабые видеокарты и сверхширокие мониторы.\r\n[/list]\r\n\r\n[h2]⚙️ Настройка OpenWeatherMap (Авто-режим)[/h2]\r\n\r\n[olist]\r\n Перейдите на сайт openweathermap и бесплатно зарегистрируйте аккаунт.\r\n В профиле откройте вкладку [b]API Keys[/b] и скопируйте бесплатный ключ.\r\n В настройках обоев в Wallpaper Engine:\r\n[list]\r\n Поставьте галочку на [b]«Включить OpenWeatherMap»[/b].\r\n Вставьте ваш ключ в поле [b]«API ключ OpenWeatherMap»[/b].\r\n Введите город на английском языке в поле [b]«Город»[/b] (например: [i]Tobolsk[/i], [i]Moscow[/i], [i]London[/i]).\r\n[/list]\r\n[/olist]\r\n\r\n[h2]🎛️ Ручной конструктор (Ручной режим)[/h2]\r\n\r\nЕсли вы хотите зафиксировать определенную атмосферу на рабочем столе, просто отключите чекбокс OpenWeatherMap и используйте ползунки:\r\n[list]\r\n [b]Время (Часы и минуты):[/b] управление положением светил на небе.\r\n [b]Облачность (%):[/b] от чистого неба до густых кучевых массивов или свинцового фронта.\r\n [b]Ветер (м/с):[/b] скорость движения облаков и наклон струй осадков.\r\n [b]Дождь и Снег (мм/ч):[/b] точная регулировка плотности осадков.\r\n [b]Гроза и молнии:[/b] тучи темнеют, небо озаряется процедурными электрическими разрядами.\r\n [b]Туман (%):[/b] мягкая приземная дымка и размытие горизонта.\r\n[/list]",
+	"file" : "index.html",
+	"general" : 
+	{
+		"properties" : 
+		{
+			"apikey" : 
+			{
+				"description" : "Ваш бесплатный API ключ с сайта openweathermap.org.",
+				"index" : 2,
+				"order" : 102,
+				"text" : "API ключ OpenWeatherMap",
+				"type" : "textinput",
+				"value" : ""
+			},
+			"cityname" : 
+			{
+				"description" : "Введите название вашего города на английском языке (например: Moscow, London, New York).",
+				"index" : 1,
+				"order" : 101,
+				"text" : "Город",
+				"type" : "textinput",
+				"value" : ""
+			},
+			"manual_clouds" : 
+			{
+				"description" : "Плотность и покрытие облачного слоя (от 0% до 100%).",
+				"index" : 6,
+				"max" : 100,
+				"min" : 0,
+				"order" : 106,
+				"step" : 1,
+				"text" : "Облачность (%)",
+				"type" : "slider",
+				"value" : 30
+			},
+			"manual_fog" : 
+			{
+				"description" : "Плотность приземного тумана и влажной дымки (от 0% до 100%).",
+				"index" : 11,
+				"max" : 100,
+				"min" : 0,
+				"order" : 111,
+				"step" : 1,
+				"text" : "Туман (%)",
+				"type" : "slider",
+				"value" : 0
+			},
+			"manual_rain" : 
+			{
+				"description" : "Интенсивность дождя (мм/ч).",
+				"index" : 8,
+				"max" : 20,
+				"min" : 0,
+				"order" : 108,
+				"step" : 0.5,
+				"text" : "Дождь (мм/ч)",
+				"type" : "slider",
+				"value" : 0
+			},
+			"manual_snow" : 
+			{
+				"description" : "Интенсивность снегопада (мм/ч).",
+				"index" : 9,
+				"max" : 20,
+				"min" : 0,
+				"order" : 109,
+				"step" : 0.5,
+				"text" : "Снег (мм/ч)",
+				"type" : "slider",
+				"value" : 0
+			},
+			"manual_thunder" : 
+			{
+				"description" : "Включить грозовые тучи и раскаты молний.",
+				"index" : 10,
+				"order" : 110,
+				"text" : "Гроза и молнии",
+				"type" : "bool",
+				"value" : false
+			},
+			"manual_time_hours" : 
+			{
+				"description" : "Часы (от 0 до 23), определяющие положение светила на небе.",
+				"index" : 4,
+				"max" : 23,
+				"min" : 0,
+				"order" : 104,
+				"step" : 1,
+				"text" : "Время — Часы",
+				"type" : "slider",
+				"value" : 14
+			},
+			"manual_time_minutes" : 
+			{
+				"description" : "Минуты (от 0 до 59).",
+				"index" : 5,
+				"max" : 59,
+				"min" : 0,
+				"order" : 105,
+				"step" : 1,
+				"text" : "Время — Минуты",
+				"type" : "slider",
+				"value" : 30
+			},
+			"manual_wind" : 
+			{
+				"description" : "Скорость ветра и интенсивность движения облаков/осадков.",
+				"index" : 7,
+				"max" : 20,
+				"min" : 0,
+				"order" : 107,
+				"step" : 0.5,
+				"text" : "Скорость ветра (м/с)",
+				"type" : "slider",
+				"value" : 15
+			},
+			"owm_enabled" : 
+			{
+				"description" : "Включить автоматическую синхронизацию с реальной погодой OpenWeatherMap. При выключении погода настраивается вручную ползунками ниже.",
+				"index" : 0,
+				"order" : 100,
+				"text" : "Включить OpenWeatherMap",
+				"type" : "bool",
+				"value" : false
+			},
+			"qualityscale" : 
+			{
+				"description" : "Масштаб разрешения рендера для оптимизации.",
+				"index" : 17,
+				"max" : 100,
+				"min" : 50,
+				"order" : 117,
+				"step" : 5,
+				"text" : "Качество рендера (%)",
+				"type" : "slider",
+				"value" : 100
+			},
+			"schemecolor" : 
+			{
+				"order" : 0,
+				"text" : "ui_browse_properties_scheme_color",
+				"type" : "color",
+				"value" : "0 0 0"
+			},
+			"showvignette" : 
+			{
+				"description" : "Кинематографичное затемнение по краям экрана.",
+				"index" : 18,
+				"order" : 118,
+				"text" : "Эффект виньетки",
+				"type" : "bool",
+				"value" : true
+			},
+			"static_time_enabled" : 
+			{
+				"description" : "Включить ручное управление положением солнца и луны по времени суток.",
+				"index" : 3,
+				"order" : 103,
+				"text" : "Фиксированное положение солнца/луны",
+				"type" : "bool",
+				"value" : true
+			},
+			"ui_show_city" : 
+			{
+				"description" : "Отображать название города.",
+				"index" : 16,
+				"order" : 116,
+				"text" : "Показывать город",
+				"type" : "bool",
+				"value" : true
+			},
+			"ui_show_date" : 
+			{
+				"description" : "Отображать дату над часами.",
+				"index" : 13,
+				"order" : 113,
+				"text" : "Показывать дату",
+				"type" : "bool",
+				"value" : true
+			},
+			"ui_show_desc" : 
+			{
+				"description" : "Отображать описание погоды (например: Ясно, Облачно).",
+				"index" : 15,
+				"order" : 115,
+				"text" : "Показывать описание погоды",
+				"type" : "bool",
+				"value" : true
+			},
+			"ui_show_temp" : 
+			{
+				"description" : "Отображать градусы/температуру.",
+				"index" : 14,
+				"order" : 114,
+				"text" : "Показывать температуру",
+				"type" : "bool",
+				"value" : true
+			},
+			"ui_show_time" : 
+			{
+				"description" : "Отображать часы на экране.",
+				"index" : 12,
+				"order" : 112,
+				"text" : "Показывать часы",
+				"type" : "bool",
+				"value" : true
+			}
+		}
+	},
+	"preview" : "preview.gif",
+	"ratingsex" : "none",
+	"ratingviolence" : "none",
+	"tags" : [ "Abstract" ],
+	"title" : "Dynamic iOS Weather | Динамическая погода iOS",
+	"type" : "web",
+	"version" : 3,
+	"visibility" : "public",
+	"workshopid" : "3804597788",
+	"workshopurl" : "steam://url/CommunityFilePage/3804597788"
+}

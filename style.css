@@ -1,0 +1,121 @@
+/* style.css - Apple iOS Lockscreen Layout & Typography */
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: #1a1e24; /* Защитный темный тон на случай инициализации холста */
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+#wallpaper-container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Полноэкранный WebGL2 холст (Three.js) */
+#gl-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    z-index: 1;
+}
+
+/* Блок экрана блокировки iOS */
+#info-overlay {
+    position: absolute;
+    top: 8.5%;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    color: #ffffff;
+    text-align: center;
+    pointer-events: none;
+    /* Многослойная мягкая тень для высокой читаемости на любых облаках */
+    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.45)) drop-shadow(0 8px 24px rgba(0, 0, 0, 0.35));
+    transition: opacity 0.5s ease;
+}
+
+/* Дата над часами */
+#current-date {
+    font-size: clamp(1.05rem, 1.4vw, 1.35rem);
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    opacity: 0.95;
+    margin-bottom: 4px;
+}
+
+/* Крупные системные часы */
+#current-time {
+    font-size: clamp(4.8rem, 10.5vw, 8.8rem);
+    font-weight: 700;
+    line-height: 0.90;
+    letter-spacing: -0.045em;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 12px;
+}
+
+/* Интерактивная строка погоды */
+.weather-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: clamp(1.15rem, 1.6vw, 1.55rem);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    opacity: 0.95;
+    cursor: pointer;
+    pointer-events: auto; /* Включаем клики */
+    transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.15s ease;
+}
+
+.weather-row:hover {
+    opacity: 1.0;
+    transform: scale(1.04);
+}
+
+.weather-row:active {
+    transform: scale(0.97);
+}
+
+#current-temp {
+    font-weight: 600;
+}
+
+#weather-separator {
+    font-size: 0.75em;
+    opacity: 0.65;
+}
+
+#current-weather-description {
+    font-weight: 400;
+}
+
+/* Название города подстрочником */
+#current-city {
+    font-size: clamp(0.85rem, 1.1vw, 1.05rem);
+    font-weight: 500;
+    opacity: 0.78;
+    letter-spacing: 0.04em;
+    margin-top: 5px;
+    text-transform: uppercase;
+}
