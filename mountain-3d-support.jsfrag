@@ -1,0 +1,445 @@
+    // --- True 3D mountain terrain -------------------------------------------------
+    // Mountains are real indexed height-field meshes rendered into a transparent
+    // render target by the EXISTING Three.js renderer. This avoids a second WebGL
+    // context and lets the weather shader draw rain/snow/lightning over the terrain.
+    let terrainRenderer = null;
+    let terrainScene = null;
+    let terrainCamera = null;
+    let terrainTarget = null;
+    let terrainMaterials = [];
+    let terrainMeshes = [];
+    let terrainLastRender = -1;
+    let terrainWidth = 1;
+    let terrainHeight = 1;
+
+    const terrainUniforms = {
+        uTerrainSunDir: { value: null },
+        uTerrainSunAlt: { value: 0.5 },
+        uTerrainDay: { value: 1.0 },
+        uTerrainGolden: { value: 0.0 },
+        uTerrainOvercast: { value: 0.0 },
+        uTerrainStorm: { value: 0.0 },
+        uTerrainFog: { value: 0.0 },
+        uTerrainSnow: { value: 0.0 },
+        uTerrainDust: { value: 0.0 },
+        uTerrainLightning: { value: 0.0 },
+        uTerrainDetail: { value: 0.65 },
+        uTerrainDepth: { value: 0.70 },
+        uTerrainHeight: { value: 0.35 },
+        uTerrainTime: { value: 0.0 }
+    };
+
+    function terrainHash(x, z, seed = 0) {
+        const v = Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453123;
+        return v - Math.floor(v);
+    }
+
+    function terrainNoise2(x, z, seed = 0) {
+        const ix = Math.floor(x), iz = Math.floor(z);
+        let fx = x - ix, fz = z - iz;
+        fx = fx * fx * (3 - 2 * fx);
+        fz = fz * fz * (3 - 2 * fz);
+        const a = terrainHash(ix, iz, seed);
+        const b = terrainHash(ix + 1, iz, seed);
+        const c = terrainHash(ix, iz + 1, seed);
+        const d = terrainHash(ix + 1, iz + 1, seed);
+        return (a * (1 - fx) + b * fx) * (1 - fz) + (c * (1 - fx) + d * fx) * fz;
+    }
+
+    function terrainFbm(x, z, seed = 0) {
+        let sum = 0, amp = 0.5, norm = 0;
+        for (let octave = 0; octave < 4; octave++) {
+            sum += terrainNoise2(x, z, seed + octave * 13.17) * amp;
+            norm += amp;
+            x = x * 2.03 + 17.1;
+            z = z * 2.01 - 9.2;
+            amp *= 0.5;
+        }
+        return sum / norm;
+    }
+
+    function createMountainGeometry(options) {
+        const xSegs = options.xSegs;
+        const zSegs = options.zSegs;
+        const width = options.width;
+        const peaks = [];
+        let seed = options.seed * 19.73;
+        const rand = () => {
+            seed += 1.0;
+            return terrainHash(seed, seed * 0.713, options.seed);
+        };
+
+        for (let i = 0; i < options.peakCount; i++) {
+            const base = -0.65 + (i / Math.max(1, options.peakCount - 1)) * 1.30;
+            const center = base + (rand() - 0.5) * (1.30 / options.peakCount) * 0.65;
+            peaks.push({
+                center,
+                width: (0.030 + rand() * 0.046) * (options.peakWidth || 1.0),
+                height: 0.50 + Math.pow(rand(), 0.62) * 0.56,
+                sharpness: 0.58 + rand() * 0.90,
+                left: 0.70 + rand() * 0.62,
+                right: 0.72 + rand() * 0.72
+            });
+        }
+
+        const positions = new Float32Array((xSegs + 1) * (zSegs + 1) * 3);
+        const elevations = new Float32Array((xSegs + 1) * (zSegs + 1));
+        const indices = [];
+        const detail = Math.max(0, Math.min(1, current.detail));
+        const invW = 1 / width;
+        let p = 0;
+
+        for (let iz = 0; iz <= zSegs; iz++) {
+            const v = iz / zSegs;
+            const zBase = options.zMin + v * (options.zMax - options.zMin);
+            for (let ix = 0; ix <= xSegs; ix++) {
+                const u = ix / xSegs;
+                // A slight deterministic vertex jitter avoids a mechanical grid/facet pattern.
+                const jitterX = (ix === 0 || ix === xSegs) ? 0 : (terrainHash(ix, iz, options.seed + 3) - 0.5) * width / xSegs * 0.32;
+                const jitterZ = (iz === 0 || iz === zSegs) ? 0 : (terrainHash(ix, iz, options.seed + 8) - 0.5) * (options.zMax - options.zMin) / zSegs * 0.20;
+                const x = (u - 0.5) * width + jitterX;
+                const z = zBase + jitterZ;
+                const xn = x * invW;
+
+                let ridge = 0.0;
+                for (const peak of peaks) {
+                    const dx = xn - peak.center;
+                    const asymmetricWidth = peak.width * (dx < 0 ? peak.left : peak.right);
+                    const d = Math.abs(dx) / asymmetricWidth;
+                    if (d < 1.0) {
+                        const profile = peak.height * Math.pow(Math.max(0, 1 - d), peak.sharpness);
+                        ridge = Math.max(ridge, profile);
+                    }
+                }
+                // Broad massif underneath the summits means valleys remain connected terrain,
+                // while ridged erosion adds secondary spurs rather than smooth sine waves.
+                const massif = 0.10 + terrainFbm(xn * 5.0 + options.seed, 3.0, options.seed) * 0.17;
+                ridge = Math.max(ridge, massif * (0.50 + terrainFbm(xn * 9.0, 2.4, options.seed + 2) * 0.45));
+
+                let falloff;
+                if (z <= options.ridgeZ) {
+                    const t = Math.max(0, Math.min(1, (options.ridgeZ - z) / options.backDepth));
+                    falloff = 0.77 + 0.23 * (1.0 - t);
+                } else {
+                    const t = Math.max(0, Math.min(1, (z - options.ridgeZ) / options.frontDepth));
+                    falloff = Math.pow(1.0 - t, options.slopePower || 0.88);
+                }
+
+                const broadErosion = (terrainFbm(x * 0.23 + options.seed * 2.1, z * 0.27, options.seed) - 0.5) * 2.0;
+                const midErosion = (terrainFbm(x * 0.63 + 4.7, z * 0.74 - 3.1, options.seed + 7) - 0.5) * 2.0;
+                const fineErosion = (terrainNoise2(x * 1.08 + 5.0, z * 1.22, options.seed + 9) - 0.5) * 2.0;
+                const ruggedness = (0.08 + detail * 0.32) * broadErosion
+                                 + (0.015 + detail * 0.095) * midErosion
+                                 + detail * 0.025 * fineErosion;
+                const h = Math.max(0.015, (ridge + ruggedness * Math.max(0.12, falloff)) * falloff * options.height);
+                positions[p * 3] = x;
+                positions[p * 3 + 1] = h;
+                positions[p * 3 + 2] = z;
+                elevations[p] = Math.max(0, Math.min(1, h / options.height));
+                p++;
+            }
+        }
+
+        for (let iz = 0; iz < zSegs; iz++) {
+            for (let ix = 0; ix < xSegs; ix++) {
+                const a = iz * (xSegs + 1) + ix;
+                const b = a + 1;
+                const c = a + (xSegs + 1);
+                const d = c + 1;
+                // Winding gives an upward-facing terrain surface.
+                indices.push(a, c, b, b, c, d);
+            }
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('aTerrainElevation', new THREE.BufferAttribute(elevations, 1));
+        geometry.setIndex(indices);
+        geometry.computeVertexNormals();
+        geometry.computeBoundingSphere();
+        return geometry;
+    }
+
+    const mountainVertexShader = `
+        precision highp float;
+        attribute float aTerrainElevation;
+        varying vec3 vTerrainPosition;
+        varying vec3 vTerrainNormal;
+        varying float vTerrainElevation;
+        void main() {
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            vTerrainPosition = position;
+            // Meshes use non-uniform scale. Convert local normals back to world space
+            // so their direction matches uTerrainSunDir used by the fragment shader.
+            vec3 terrainScale = vec3(length(modelMatrix[0].xyz), length(modelMatrix[1].xyz), length(modelMatrix[2].xyz));
+            vTerrainNormal = normalize(normal / max(terrainScale, vec3(0.0001)));
+            vTerrainElevation = aTerrainElevation;
+            gl_Position = projectionMatrix * mvPosition;
+        }
+    `;
+
+    const mountainFragmentShader = `
+        precision highp float;
+        uniform vec3 uTerrainSunDir;
+        uniform float uTerrainSunAlt;
+        uniform float uTerrainDay;
+        uniform float uTerrainGolden;
+        uniform float uTerrainOvercast;
+        uniform float uTerrainStorm;
+        uniform float uTerrainFog;
+        uniform float uTerrainSnow;
+        uniform float uTerrainDust;
+        uniform float uTerrainLightning;
+        uniform float uTerrainDetail;
+        uniform float uTerrainDepth;
+        uniform float uTerrainHeight;
+        uniform float uTerrainTime;
+        uniform float uRangeFar;
+        uniform float uRangeAlpha;
+        varying vec3 vTerrainPosition;
+        varying vec3 vTerrainNormal;
+        varying float vTerrainElevation;
+
+        float terrainHash(vec2 p) {
+            p = fract(p * vec2(123.34, 456.21));
+            p += vec2(dot(p, p + vec2(45.32)));
+            return fract(p.x * p.y);
+        }
+        float terrainNoise(vec2 p) {
+            vec2 i = floor(p), f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = terrainHash(i);
+            float b = terrainHash(i + vec2(1.0, 0.0));
+            float c = terrainHash(i + vec2(0.0, 1.0));
+            float d = terrainHash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+        float terrainFbm(vec2 p) {
+            float sum = 0.0;
+            float amp = 0.5;
+            for (int i = 0; i < 4; i++) {
+                sum += terrainNoise(p) * amp;
+                p = p * 2.03 + vec2(17.1, 9.2);
+                amp *= 0.5;
+            }
+            return sum / 0.9375;
+        }
+        void main() {
+            vec3 N = normalize(vTerrainNormal);
+            if (!gl_FrontFacing) N = -N;
+            vec3 L = normalize(uTerrainSunDir);
+            float diffuse = max(dot(N, L), 0.0);
+            float broad = terrainFbm(vTerrainPosition.xz * 0.19 + vec2(7.3, 3.8));
+            float medium = terrainFbm(vTerrainPosition.xz * 0.61 + vec2(18.4, -5.1));
+            float fine = terrainFbm(vTerrainPosition.xz * 1.65 + vec2(-3.2, 12.4));
+            float rockBands = 1.0 - smoothstep(0.04, 0.18,
+                abs(sin(vTerrainPosition.y * 5.4 + broad * 2.2 + medium * 0.7)));
+            float rockFace = clamp(1.0 - N.y, 0.0, 1.0);
+
+            vec3 rockShadow = mix(vec3(0.075, 0.092, 0.115), vec3(0.18, 0.19, 0.19), broad);
+            vec3 rockLight = mix(vec3(0.29, 0.30, 0.29), vec3(0.52, 0.48, 0.40), medium);
+            vec3 rock = mix(rockShadow, rockLight, clamp(broad * 0.62 + medium * 0.38, 0.0, 1.0));
+            rock *= mix(0.76, 1.12, fine);
+            rock = mix(rock, rock * vec3(0.56, 0.62, 0.69), rockBands * rockFace * 0.42 * uTerrainDetail);
+            // Long muted mineral seams give the surface scale without adding pixel-sized grain.
+            float strata = smoothstep(0.78, 0.94, terrainFbm(vec2(vTerrainPosition.x * 0.12 + broad * 1.7, vTerrainPosition.y * 2.8)));
+            rock *= 1.0 - strata * rockFace * 0.18 * uTerrainDetail;
+
+            float day = clamp(uTerrainDay, 0.0, 1.0);
+            float overcast = clamp(uTerrainOvercast, 0.0, 1.0);
+            float storm = clamp(uTerrainStorm, 0.0, 1.0);
+            vec3 sunTint = mix(vec3(0.64, 0.74, 0.93), vec3(1.0, 0.65, 0.40), uTerrainGolden);
+            vec3 skyFill = mix(vec3(0.018, 0.026, 0.050), vec3(0.29, 0.37, 0.49), day);
+            skyFill = mix(skyFill, vec3(0.20, 0.23, 0.27), overcast * 0.78);
+            float ambient = mix(0.12, 0.39, day) + overcast * 0.13;
+            float direct = diffuse * (0.12 + 0.88 * day) * (1.0 - overcast * 0.72) * (1.0 - storm * 0.70);
+            vec3 color = rock * (vec3(ambient) + direct * sunTint);
+            color += skyFill * (0.11 + max(N.y, 0.0) * 0.10);
+
+            // Snow follows high alpine ridges and slightly favours upward-facing facets.
+            float snowNoise = terrainFbm(vTerrainPosition.xz * 0.42 + vec2(21.0, 2.0));
+            float snowLine = mix(0.83, 0.59, clamp(uTerrainSnow, 0.0, 1.0)) + (snowNoise - 0.5) * 0.12;
+            float snowMask = smoothstep(snowLine - 0.045, snowLine + 0.028, vTerrainElevation)
+                           * smoothstep(0.12, 0.72, N.y) * uTerrainSnow;
+            float snowTexture = terrainFbm(vTerrainPosition.xz * 1.15 + vec2(3.7, 18.0));
+            vec3 snowColor = mix(vec3(0.42, 0.51, 0.63), vec3(0.86, 0.90, 0.95), clamp(0.35 + diffuse * 0.42 + snowTexture * 0.22, 0.0, 1.0));
+            color = mix(color, snowColor, snowMask);
+
+            // Desert dust and storms desaturate the rock; lightning briefly lights the faces.
+            vec3 dustColor = mix(vec3(0.27, 0.24, 0.19), vec3(0.43, 0.32, 0.22), day * 0.7);
+            color = mix(color, dustColor * (0.55 + diffuse * 0.32), uTerrainDust * 0.62);
+            color = mix(color, vec3(dot(color, vec3(0.299, 0.587, 0.114))) * vec3(0.82, 0.88, 0.98), storm * 0.26);
+            color += vec3(0.47, 0.58, 0.78) * uTerrainLightning * 0.85;
+            color = mix(color, skyFill, clamp(uTerrainFog * (uRangeFar > 0.5 ? 0.58 : 0.23) + uTerrainDepth * uRangeFar * 0.20, 0.0, 0.78));
+            float alpha = uRangeAlpha;
+            gl_FragColor = vec4(max(color, vec3(0.0)), alpha);
+        }
+    `;
+
+    function buildTerrainMaterial(isFar, alpha) {
+        const uniforms = {};
+        Object.keys(terrainUniforms).forEach((key) => { uniforms[key] = terrainUniforms[key]; });
+        uniforms.uRangeFar = { value: isFar ? 1.0 : 0.0 };
+        uniforms.uRangeAlpha = { value: alpha };
+        return new THREE.ShaderMaterial({
+            uniforms,
+            vertexShader: mountainVertexShader,
+            fragmentShader: mountainFragmentShader,
+            transparent: alpha < 0.999,
+            depthTest: true,
+            depthWrite: true,
+            side: THREE.DoubleSide,
+            blending: THREE.NormalBlending,
+            toneMapped: false
+        });
+    }
+
+    function attachRenderer(renderer) {
+        if (terrainRenderer === renderer && terrainTarget) return;
+        terrainRenderer = renderer;
+        if (!terrainUniforms.uTerrainSunDir.value) terrainUniforms.uTerrainSunDir.value = new THREE.Vector3(-0.25, 0.72, 0.55).normalize();
+        terrainScene = new THREE.Scene();
+        terrainScene.background = null;
+        terrainCamera = new THREE.PerspectiveCamera(36, 16 / 9, 0.1, 140.0);
+        terrainCamera.position.set(0.0, 5.8, 22.0);
+        terrainCamera.lookAt(0.0, 2.45, -2.6);
+        terrainCamera.updateProjectionMatrix();
+
+        const farGeometry = createMountainGeometry({
+            seed: 13, xSegs: 190, zSegs: 44, width: 58,
+            zMin: -16.0, zMax: -7.0, ridgeZ: -12.4,
+            backDepth: 4.4, frontDepth: 5.0, slopePower: 0.82,
+            height: 3.35, peakCount: 17, peakWidth: 1.12
+        });
+        const mainGeometry = createMountainGeometry({
+            seed: 29, xSegs: 238, zSegs: 76, width: 55,
+            zMin: -9.0, zMax: 11.5, ridgeZ: -5.5,
+            backDepth: 3.8, frontDepth: 17.0, slopePower: 0.76,
+            height: 5.2, peakCount: 19, peakWidth: 1.08
+        });
+        const foreGeometry = createMountainGeometry({
+            seed: 47, xSegs: 220, zSegs: 56, width: 58,
+            zMin: -1.3, zMax: 10.0, ridgeZ: 1.2,
+            backDepth: 2.0, frontDepth: 8.8, slopePower: 0.68,
+            height: 1.55, peakCount: 23, peakWidth: 1.18
+        });
+
+        const farMat = buildTerrainMaterial(true, 0.73);
+        const mainMat = buildTerrainMaterial(false, 0.985);
+        const foreMat = buildTerrainMaterial(false, 0.995);
+        const farMesh = new THREE.Mesh(farGeometry, farMat);
+        const mainMesh = new THREE.Mesh(mainGeometry, mainMat);
+        const foreMesh = new THREE.Mesh(foreGeometry, foreMat);
+        farMesh.renderOrder = 0;
+        mainMesh.renderOrder = 1;
+        foreMesh.renderOrder = 2;
+        terrainScene.add(farMesh, mainMesh, foreMesh);
+        terrainMeshes = [farMesh, mainMesh, foreMesh];
+        terrainMaterials = [farMat, mainMat, foreMat];
+
+        terrainTarget = new THREE.WebGLRenderTarget(1, 1, {
+            format: THREE.RGBAFormat,
+            minFilter: THREE.LinearFilter,
+            magFilter: THREE.LinearFilter,
+            depthBuffer: true,
+            stencilBuffer: false
+        });
+        terrainTarget.texture.generateMipmaps = false;
+        terrainTarget.texture.name = 'EnvironmentMountainRenderTarget';
+        clearMountainTarget();
+    }
+
+    function clearMountainTarget() {
+        if (!terrainRenderer || !terrainTarget) return;
+        const prevTarget = terrainRenderer.getRenderTarget();
+        const prevColor = terrainRenderer.getClearColor(new THREE.Color()).clone();
+        const prevAlpha = terrainRenderer.getClearAlpha();
+        try {
+            terrainRenderer.setRenderTarget(terrainTarget);
+            terrainRenderer.setClearColor(0x000000, 0.0);
+            terrainRenderer.clear(true, true, true);
+        } finally {
+            terrainRenderer.setRenderTarget(prevTarget);
+            terrainRenderer.setClearColor(prevColor, prevAlpha);
+        }
+    }
+
+    function resize(width, height) {
+        if (!terrainTarget || !terrainCamera) return;
+        const w = Math.max(1, Math.floor(width || 1));
+        const h = Math.max(1, Math.floor(height || 1));
+        if (w !== terrainWidth || h !== terrainHeight) {
+            terrainWidth = w;
+            terrainHeight = h;
+            terrainTarget.setSize(w, h);
+            terrainCamera.aspect = w / h;
+            terrainCamera.updateProjectionMatrix();
+            clearMountainTarget();
+        }
+    }
+
+    function uniformValue(uniforms, key, fallback = 0) {
+        const entry = uniforms && uniforms[key];
+        if (!entry || entry.value === undefined || entry.value === null) return fallback;
+        const value = Number(entry.value);
+        return Number.isFinite(value) ? value : fallback;
+    }
+
+    function renderMountains(renderer, uniforms, timeSec) {
+        if (!terrainTarget || !terrainScene || !renderer) return;
+        if (current.enabled < 0.005 || current.type >= 1.5) return;
+        const t = Number.isFinite(timeSec) ? timeSec : 0;
+        // Terrain shading changes slowly, so 30 Hz is enough and avoids spending a full extra pass at 60/120 Hz.
+        if (terrainLastRender >= 0 && t - terrainLastRender < 1 / 30) return;
+        terrainLastRender = t;
+
+        const sunAlt = uniformValue(uniforms, 'u_sun_alt', 0.4);
+        const sunUV = uniforms && uniforms.u_sun_uv && uniforms.u_sun_uv.value;
+        const sunX = sunUV && Number.isFinite(sunUV.x) ? sunUV.x : 0.5;
+        const cloudCov = uniformValue(uniforms, 'u_cloud_cov', 0.3);
+        const cloudType = uniformValue(uniforms, 'u_cloud_type', 0.0);
+        const rain = Math.max(uniformValue(uniforms, 'u_rain'), uniformValue(uniforms, 'u_heavy_rain') * 0.8);
+        const snow = Math.max(uniformValue(uniforms, 'u_snow'), uniformValue(uniforms, 'u_blizzard'));
+        const storm = Math.max(uniformValue(uniforms, 'u_thunder'), uniformValue(uniforms, 'u_lightning') * 0.65, rain * 0.36);
+        const overcast = clamp01(cloudCov * (0.35 + cloudType * 0.55) + rain * 0.16 + uniformValue(uniforms, 'u_fog') * 0.25);
+        const day = clamp01((sunAlt + 0.12) / 0.40);
+        const golden = clamp01(1.0 - Math.abs(sunAlt - 0.025) / 0.19) * day;
+        const sunDir = terrainUniforms.uTerrainSunDir.value;
+        sunDir.set((sunX - 0.5) * 1.65, Math.max(0.12, sunAlt * 1.25 + 0.35), 0.54).normalize();
+        terrainUniforms.uTerrainSunAlt.value = sunAlt;
+        terrainUniforms.uTerrainDay.value = day;
+        terrainUniforms.uTerrainGolden.value = golden;
+        terrainUniforms.uTerrainOvercast.value = overcast;
+        terrainUniforms.uTerrainStorm.value = storm;
+        terrainUniforms.uTerrainFog.value = uniformValue(uniforms, 'u_fog');
+        terrainUniforms.uTerrainSnow.value = snow;
+        terrainUniforms.uTerrainDust.value = uniformValue(uniforms, 'u_dust');
+        terrainUniforms.uTerrainLightning.value = uniformValue(uniforms, 'u_lightning');
+        terrainUniforms.uTerrainDetail.value = current.detail;
+        terrainUniforms.uTerrainDepth.value = current.depth;
+        terrainUniforms.uTerrainHeight.value = current.height;
+        terrainUniforms.uTerrainTime.value = t;
+
+        // Live generation controls: height scales relief, density changes apparent ridge frequency,
+        // depth increases atmospheric separation of the distant range.
+        const xScale = 1.36 - current.density * 0.68;
+        const yScale = 0.55 + current.height * 1.20;
+        for (const mesh of terrainMeshes) mesh.scale.set(xScale, yScale, 1.0);
+        if (terrainMaterials.length > 0) {
+            terrainMaterials[0].uniforms.uRangeAlpha.value = 0.88 - current.depth * 0.22;
+        }
+
+        const prevTarget = renderer.getRenderTarget();
+        const prevColor = renderer.getClearColor(new THREE.Color()).clone();
+        const prevAlpha = renderer.getClearAlpha();
+        try {
+            renderer.setRenderTarget(terrainTarget);
+            renderer.setClearColor(0x000000, 0.0);
+            renderer.clear(true, true, true);
+            renderer.render(terrainScene, terrainCamera);
+        } finally {
+            renderer.setRenderTarget(prevTarget);
+            renderer.setClearColor(prevColor, prevAlpha);
+        }
+    }
+
