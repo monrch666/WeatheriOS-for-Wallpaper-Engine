@@ -421,6 +421,8 @@ window.wallpaperPropertyListener = {
             state.showVignette = props.showvignette.value;
         }
 
+        if (window.EnvironmentSystem) window.EnvironmentSystem.applyProperties(props);
+
         if (props.weather && OWM_ENABLED) {
             try {
                 const data = JSON.parse(props.weather.value);

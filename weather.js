@@ -47,6 +47,9 @@ class WeatherShaderEngine {
             }
         `;
 
+        const envShaderChunk = window.EnvironmentSystem ? window.EnvironmentSystem.getShaderChunk() : '';
+        const envFragmentCall = window.EnvironmentSystem ? window.EnvironmentSystem.getFragmentCall() : '';
+
         const fragmentShader = `
             precision highp float;
 
@@ -347,6 +350,8 @@ class WeatherShaderEngine {
                 return (core + glow) * smoothstep(1.0, 0.1, uv.y);
             }
 
+            ${envShaderChunk}
+
             void main() {
                 vec2 uv = vUv;
                 float aspect = u_resolution.x / u_resolution.y;
@@ -563,6 +568,8 @@ class WeatherShaderEngine {
                     col = col * (1.0 - cloudAccum.a * horizonHaze) + cloudAccum.rgb * horizonHaze;
                 }
 
+                ${envFragmentCall}
+
                 // 4. Осадки
                 if (u_lightning > 0.05) {
                     float bolt = getLightning(uv, u_bolt_seed) * u_lightning;
@@ -615,6 +622,7 @@ class WeatherShaderEngine {
         `;
 
         this.uniforms = {
+            ...(window.EnvironmentSystem ? window.EnvironmentSystem.getUniforms() : {}),
             u_resolution:    { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
             u_time:          { value: 0.0 },
             u_sun_uv:        { value: new THREE.Vector2(0.5, 0.5) },
@@ -692,6 +700,8 @@ class WeatherShaderEngine {
         this.uniforms.u_lightning.value = lightningVal;
         this.uniforms.u_bolt_seed.value = this.lightningSeed;
         this.uniforms.u_vignette.value = state.showVignette ? 1.0 : 0.0;
+
+        if (window.EnvironmentSystem) window.EnvironmentSystem.updateUniforms(this.uniforms, timeSec);
 
         this.renderer.render(this.scene, this.camera);
     }
